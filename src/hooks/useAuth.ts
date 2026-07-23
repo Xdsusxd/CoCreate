@@ -3,30 +3,67 @@ import { User, Session } from '@supabase/supabase-js';
 import * as WebBrowser from 'expo-web-browser';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase, getOAuthRedirectUrl } from '../lib/supabase';
-import { AuthCredentials, AuthState } from '../types/auth';
+import { AuthCredentials } from '../types/auth';
+import { fetchProfileFromSupabase, getCachedUserProfile, UserProfile } from '../services/profileService';
 
 const LOCAL_MOCK_SESSION_KEY = '@cocreate_local_auth_session';
 
 WebBrowser.maybeCompleteAuthSession();
 
+export interface AuthStateExtended {
+  user: User | null;
+  session: Session | null;
+  profile: UserProfile | null;
+  isLoading: boolean;
+  isProfileChecking: boolean;
+  error: string | null;
+}
+
 export const useAuth = () => {
-  const [authState, setAuthState] = useState<AuthState>({
+  const [authState, setAuthState] = useState<AuthStateExtended>({
     user: null,
     session: null,
+    profile: null,
     isLoading: true,
+    isProfileChecking: false,
     error: null,
   });
 
-  // Listen to Supabase Auth state changes & restore local sessions
+  // Check profile in Supabase DB / local cache for active user
+  const checkUserProfile = useCallback(async (userId: string): Promise<UserProfile | null> => {
+    setAuthState((prev) => ({ ...prev, isProfileChecking: true }));
+
+    // 1. Try Supabase DB
+    const dbProfile = await fetchProfileFromSupabase(userId);
+    if (dbProfile) {
+      setAuthState((prev) => ({ ...prev, profile: dbProfile, isProfileChecking: false }));
+      return dbProfile;
+    }
+
+    // 2. Try cached AsyncStorage
+    const cachedProfile = await getCachedUserProfile();
+    if (cachedProfile && (cachedProfile.id === userId || !cachedProfile.id)) {
+      setAuthState((prev) => ({ ...prev, profile: cachedProfile, isProfileChecking: false }));
+      return cachedProfile;
+    }
+
+    setAuthState((prev) => ({ ...prev, profile: null, isProfileChecking: false }));
+    return null;
+  }, []);
+
+  // Listen to Supabase Auth state changes & restore session + profile
   useEffect(() => {
     const initAuth = async () => {
       try {
         const { data: { session }, error } = await supabase.auth.getSession();
         if (!error && session) {
+          const profile = await checkUserProfile(session.user.id);
           setAuthState({
             user: session.user,
             session: session,
+            profile,
             isLoading: false,
+            isProfileChecking: false,
             error: null,
           });
           return;
@@ -36,16 +73,19 @@ export const useAuth = () => {
         const localMock = await AsyncStorage.getItem(LOCAL_MOCK_SESSION_KEY);
         if (localMock) {
           const parsed = JSON.parse(localMock);
+          const cachedProfile = await getCachedUserProfile();
           setAuthState({
             user: parsed.user,
             session: parsed.session,
+            profile: cachedProfile,
             isLoading: false,
+            isProfileChecking: false,
             error: null,
           });
           return;
         }
       } catch (err) {
-        console.warn('[useAuth] Error initializing auth, using default offline state');
+        console.warn('[useAuth] Error initializing auth, using default state');
       }
 
       setAuthState((prev) => ({ ...prev, isLoading: false }));
@@ -53,12 +93,15 @@ export const useAuth = () => {
 
     initAuth();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (session) {
+        const profile = await fetchProfileFromSupabase(session.user.id);
         setAuthState({
           user: session.user,
           session: session,
+          profile,
           isLoading: false,
+          isProfileChecking: false,
           error: null,
         });
       }
@@ -67,7 +110,7 @@ export const useAuth = () => {
     return () => {
       subscription.unsubscribe();
     };
-  }, []);
+  }, [checkUserProfile]);
 
   const clearError = useCallback(() => {
     setAuthState((prev) => ({ ...prev, error: null }));
@@ -95,99 +138,122 @@ export const useAuth = () => {
     return mockUser;
   };
 
-  // Email/Password Login with Fallback
-  const signInWithEmail = useCallback(async ({ email, password }: AuthCredentials) => {
-    if (!email || !password) {
-      setAuthState((prev) => ({ ...prev, error: 'Por favor, ingresa tu correo y contraseña.' }));
-      return false;
-    }
+  // Email/Password Login (supabase.auth.signInWithPassword)
+  const signInWithEmail = useCallback(
+    async ({ email, password }: AuthCredentials): Promise<{ success: boolean; profileExists: boolean }> => {
+      if (!email || !password) {
+        setAuthState((prev) => ({ ...prev, error: 'Por favor, ingresa tu correo y contraseña.' }));
+        return { success: false, profileExists: false };
+      }
 
-    setAuthState((prev) => ({ ...prev, isLoading: true, error: null }));
+      setAuthState((prev) => ({ ...prev, isLoading: true, error: null }));
 
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
-      if (error) {
-        // If dummy credentials or project unconfigured, fallback gracefully to mock session
-        if (error.message.includes('Invalid login credentials') || error.message.includes('FetchError') || error.message.includes('Failed to fetch')) {
+        if (error) {
+          if (
+            error.message.includes('Invalid login credentials') ||
+            error.message.includes('FetchError') ||
+            error.message.includes('Failed to fetch')
+          ) {
+            const mockUser = await createMockSession(email);
+            const profile = await getCachedUserProfile();
+            setAuthState({
+              user: mockUser,
+              session: null,
+              profile,
+              isLoading: false,
+              isProfileChecking: false,
+              error: null,
+            });
+            return { success: true, profileExists: Boolean(profile?.username) };
+          }
+
+          setAuthState((prev) => ({ ...prev, error: error.message, isLoading: false }));
+          return { success: false, profileExists: false };
+        }
+
+        const profile = await checkUserProfile(data.user.id);
+        setAuthState({
+          user: data.user,
+          session: data.session,
+          profile,
+          isLoading: false,
+          isProfileChecking: false,
+          error: null,
+        });
+
+        return { success: true, profileExists: Boolean(profile?.username) };
+      } catch (err: any) {
+        const mockUser = await createMockSession(email);
+        const profile = await getCachedUserProfile();
+        setAuthState({
+          user: mockUser,
+          session: null,
+          profile,
+          isLoading: false,
+          isProfileChecking: false,
+          error: null,
+        });
+        return { success: true, profileExists: Boolean(profile?.username) };
+      }
+    },
+    [checkUserProfile]
+  );
+
+  // Email/Password Signup (supabase.auth.signUp)
+  const signUpWithEmail = useCallback(
+    async ({ email, password }: AuthCredentials): Promise<{ success: boolean; profileExists: boolean }> => {
+      if (!email || !password) {
+        setAuthState((prev) => ({ ...prev, error: 'Por favor completa todos los campos.' }));
+        return { success: false, profileExists: false };
+      }
+
+      setAuthState((prev) => ({ ...prev, isLoading: true, error: null }));
+
+      try {
+        const { data, error } = await supabase.auth.signUp({ email, password });
+        if (error) {
           const mockUser = await createMockSession(email);
           setAuthState({
             user: mockUser,
             session: null,
+            profile: null,
             isLoading: false,
+            isProfileChecking: false,
             error: null,
           });
-          return true;
+          return { success: true, profileExists: false };
         }
 
-        setAuthState((prev) => ({ ...prev, error: error.message, isLoading: false }));
-        return false;
-      }
-
-      setAuthState({
-        user: data.user,
-        session: data.session,
-        isLoading: false,
-        error: null,
-      });
-      return true;
-    } catch (err: any) {
-      // Fallback for offline dev
-      const mockUser = await createMockSession(email);
-      setAuthState({
-        user: mockUser,
-        session: null,
-        isLoading: false,
-        error: null,
-      });
-      return true;
-    }
-  }, []);
-
-  // Email/Password Signup with Fallback
-  const signUpWithEmail = useCallback(async ({ email, password }: AuthCredentials) => {
-    if (!email || !password) {
-      setAuthState((prev) => ({ ...prev, error: 'Por favor completa todos los campos.' }));
-      return false;
-    }
-
-    setAuthState((prev) => ({ ...prev, isLoading: true, error: null }));
-
-    try {
-      const { data, error } = await supabase.auth.signUp({ email, password });
-      if (error) {
-        // Local dev fallback
+        setAuthState({
+          user: data.user,
+          session: data.session,
+          profile: null,
+          isLoading: false,
+          isProfileChecking: false,
+          error: null,
+        });
+        return { success: true, profileExists: false };
+      } catch (err: any) {
         const mockUser = await createMockSession(email);
         setAuthState({
           user: mockUser,
           session: null,
+          profile: null,
           isLoading: false,
+          isProfileChecking: false,
           error: null,
         });
-        return true;
+        return { success: true, profileExists: false };
       }
+    },
+    []
+  );
 
-      setAuthState({
-        user: data.user,
-        session: data.session,
-        isLoading: false,
-        error: null,
-      });
-      return true;
-    } catch (err: any) {
-      const mockUser = await createMockSession(email);
-      setAuthState({
-        user: mockUser,
-        session: null,
-        isLoading: false,
-        error: null,
-      });
-      return true;
-    }
-  }, []);
-
-  // Google OAuth flow
-  const signInWithGoogle = useCallback(async () => {
+  // Google OAuth flow (supabase.auth.signInWithOAuth)
+  const signInWithGoogle = useCallback(async (): Promise<{ success: boolean; profileExists: boolean }> => {
     setAuthState((prev) => ({ ...prev, isLoading: true, error: null }));
 
     try {
@@ -218,37 +284,48 @@ export const useAuth = () => {
 
             if (sessionError) throw sessionError;
 
-            setAuthState({
-              user: sessionData.user,
-              session: sessionData.session,
-              isLoading: false,
-              error: null,
-            });
-            return true;
+            if (sessionData && sessionData.user) {
+              const profile = await checkUserProfile(sessionData.user.id);
+              setAuthState({
+                user: sessionData.user,
+                session: sessionData.session,
+                profile,
+                isLoading: false,
+                isProfileChecking: false,
+                error: null,
+              });
+              return { success: true, profileExists: Boolean(profile?.username) };
+            }
           }
         }
       }
 
-      // Dev fallback for Google Auth demo
+      // Dev fallback for Google Auth
       const mockUser = await createMockSession('creador.google@cocreate.app');
+      const cachedProfile = await getCachedUserProfile();
       setAuthState({
         user: mockUser,
         session: null,
+        profile: cachedProfile,
         isLoading: false,
+        isProfileChecking: false,
         error: null,
       });
-      return true;
+      return { success: true, profileExists: Boolean(cachedProfile?.username) };
     } catch (err: any) {
       const mockUser = await createMockSession('creador.google@cocreate.app');
+      const cachedProfile = await getCachedUserProfile();
       setAuthState({
         user: mockUser,
         session: null,
+        profile: cachedProfile,
         isLoading: false,
+        isProfileChecking: false,
         error: null,
       });
-      return true;
+      return { success: true, profileExists: Boolean(cachedProfile?.username) };
     }
-  }, []);
+  }, [checkUserProfile]);
 
   // Sign out
   const signOut = useCallback(async () => {
@@ -262,7 +339,9 @@ export const useAuth = () => {
     setAuthState({
       user: null,
       session: null,
+      profile: null,
       isLoading: false,
+      isProfileChecking: false,
       error: null,
     });
   }, []);
@@ -274,5 +353,6 @@ export const useAuth = () => {
     signInWithGoogle,
     signOut,
     clearError,
+    checkUserProfile,
   };
 };

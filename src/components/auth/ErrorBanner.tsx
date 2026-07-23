@@ -3,6 +3,7 @@ import { StyleSheet, Text, View, Pressable } from 'react-native';
 import { MotiView } from 'moti';
 import { COLORS } from '../../theme/colors';
 import { TYPOGRAPHY } from '../../theme/typography';
+import { CloseIcon } from '../common/SvgIcons';
 
 interface ErrorBannerProps {
   message: string | null;
@@ -25,7 +26,7 @@ export const ErrorBanner: React.FC<ErrorBannerProps> = ({ message, onDismiss }) 
           <Text style={[TYPOGRAPHY.body, styles.messageText]}>{message}</Text>
           {onDismiss && (
             <Pressable onPress={onDismiss} hitSlop={10} style={styles.closeButton}>
-              <Text style={styles.closeText}>✕</Text>
+              <CloseIcon size={14} color="#000000" />
             </Pressable>
           )}
         </View>
@@ -60,10 +61,6 @@ const styles = StyleSheet.create({
   },
   closeButton: {
     marginLeft: 10,
-  },
-  closeText: {
-    color: '#000000',
-    fontSize: 14,
-    fontWeight: '700',
+    padding: 2,
   },
 });

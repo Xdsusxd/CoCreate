@@ -2,25 +2,28 @@ import React, { useState, useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, View, Text } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { SplashScreen } from './src/screens/SplashScreen';
+import { SplashScreen, SplashResult } from './src/screens/SplashScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { useAuth } from './src/hooks/useAuth';
 import { COLORS } from './src/theme/colors';
 
 export default function App() {
-  const { user, isLoading, signOut } = useAuth();
+  const { user, profile, isLoading, signOut } = useAuth();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
 
   useEffect(() => {
-    if (user) {
+    if (user && profile?.profile_setup_completed) {
       setIsAuthenticated(true);
     }
-  }, [user]);
+  }, [user, profile]);
 
-  const handleSplashFinish = () => {
+  const handleSplashFinish = (result: SplashResult) => {
     setShowSplash(false);
+    if (result.hasSession && result.hasProfile) {
+      setIsAuthenticated(true);
+    }
   };
 
   const handleLoginSuccess = () => {
@@ -30,7 +33,7 @@ export default function App() {
   const handleSignOut = async () => {
     await signOut();
     setIsAuthenticated(false);
-    setShowSplash(false); // Skip splash on sign out back to login
+    setShowSplash(false);
   };
 
   return (

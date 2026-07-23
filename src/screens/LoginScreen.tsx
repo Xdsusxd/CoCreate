@@ -25,43 +25,54 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const { signInWithEmail, signUpWithEmail, signInWithGoogle, isLoading, error, clearError } = useAuth();
   const [step, setStep] = useState<'credentials' | 'profile_setup'>('credentials');
 
-  // Motion Graphics Shared Values for Lateral Collapse / Elastic Expand Transition
-  const credentialsScaleX = useSharedValue(1);
+  // Motion Graphics Curtain Shared Values (1px Klein Blue line expanding outward)
+  const curtainScaleX = useSharedValue(0);
+  const curtainOpacity = useSharedValue(0);
   const credentialsOpacity = useSharedValue(1);
-  const profileScaleX = useSharedValue(0);
   const profileOpacity = useSharedValue(0);
 
   const handleAuthSubmit = async (credentials: AuthCredentials, mode: AuthMode) => {
-    const success = mode === 'login'
+    const result = mode === 'login'
       ? await signInWithEmail(credentials)
       : await signUpWithEmail(credentials);
 
-    if (success) {
-      triggerTransitionToProfile();
+    if (result.success) {
+      if (result.profileExists) {
+        // Skip profile setup if profile already exists in DB/cache
+        onLoginSuccess();
+      } else {
+        triggerCurtainTransitionToProfile();
+      }
     }
-    return success;
+    return result.success;
   };
 
   const handleGoogleSubmit = async () => {
-    const success = await signInWithGoogle();
-    if (success) {
-      triggerTransitionToProfile();
+    const result = await signInWithGoogle();
+    if (result.success) {
+      if (result.profileExists) {
+        onLoginSuccess();
+      } else {
+        triggerCurtainTransitionToProfile();
+      }
     }
-    return success;
+    return result.success;
   };
 
-  // Step 1 -> Step 2 Motion Graphics Transition:
-  // 1. Credentials form fades & collapses horizontally toward center (scaleX: 1 -> 0).
-  // 2. Profile Setup Panel opens elastically (scaleX: 0 -> 1 with Spring interpolation).
-  const triggerTransitionToProfile = () => {
+  // Step 1 -> Step 2 Curtain Transition:
+  // 1. Credentials form fades.
+  // 2. 1px Klein Blue line expands horizontally outward as a curtain reveal.
+  // 3. ProfileSetupPanel opens smoothly.
+  const triggerCurtainTransitionToProfile = () => {
     credentialsOpacity.value = withTiming(0, { duration: 250 });
-    credentialsScaleX.value = withTiming(
-      0,
-      { duration: 320, easing: Easing.inOut(Easing.cubic) },
+    curtainOpacity.value = 1;
+    curtainScaleX.value = withTiming(
+      1,
+      { duration: 400, easing: Easing.out(Easing.cubic) },
       (finished) => {
         if (finished) {
           runOnJS(setStep)('profile_setup');
-          profileScaleX.value = withSpring(1, { damping: 16, stiffness: 130 });
+          curtainOpacity.value = withTiming(0, { duration: 250 });
           profileOpacity.value = withTiming(1, { duration: 350 });
         }
       }
@@ -69,21 +80,26 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   };
 
   const handleProfileSetupComplete = (profile: UserProfile) => {
-    console.log('[LoginScreen] Profile setup completed successfully:', profile);
-    // Flow halted here as requested by prompt guidelines (profile_setup_completed: true saved in AsyncStorage & Supabase)
+    console.log('[LoginScreen] Profile setup completed:', profile);
+    onLoginSuccess();
   };
 
   const credentialsAnimatedStyle = useAnimatedStyle(() => {
     return {
       opacity: credentialsOpacity.value,
-      transform: [{ scaleX: credentialsScaleX.value }],
     };
   });
 
   const profileAnimatedStyle = useAnimatedStyle(() => {
     return {
       opacity: profileOpacity.value,
-      transform: [{ scaleX: profileScaleX.value }],
+    };
+  });
+
+  const curtainAnimatedStyle = useAnimatedStyle(() => {
+    return {
+      opacity: curtainOpacity.value,
+      transform: [{ scaleX: curtainScaleX.value }],
     };
   });
 
@@ -116,8 +132,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           </MotiText>
         </MotiView>
 
-        {/* Transition Container: Credentials Form <-> Profile Setup Panel */}
+        {/* Transition Container: Credentials Form <-> 1px Curtain Line <-> Profile Setup Panel */}
         <View style={styles.cardContainerWrapper}>
+          {/* Horizontal 1px Klein Blue Curtain Line Reveal */}
+          <Animated.View style={[styles.curtainLine, curtainAnimatedStyle]} />
+
           {step === 'credentials' ? (
             <Animated.View style={[styles.cardAnimatedView, credentialsAnimatedStyle]}>
               <LoginForm
@@ -203,6 +222,17 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 420,
     alignSelf: 'center',
+    position: 'relative',
+    overflow: 'hidden', // Layout containment
+  },
+  curtainLine: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: '50%',
+    height: 1, // 1px horizontal Klein Blue curtain
+    backgroundColor: COLORS.kleinBlue,
+    zIndex: 10,
   },
   cardAnimatedView: {
     width: '100%',

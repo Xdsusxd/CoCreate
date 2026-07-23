@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { StyleSheet, View, Text, Dimensions, SafeAreaView } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -12,40 +12,67 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import { COLORS } from '../theme/colors';
+import { supabase } from '../lib/supabase';
+import { fetchProfileFromSupabase, getCachedUserProfile } from '../services/profileService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const LINE_MAX_WIDTH = Math.min(SCREEN_WIDTH * 0.84, 320);
 
+export interface SplashResult {
+  hasSession: boolean;
+  hasProfile: boolean;
+}
+
 interface SplashScreenProps {
-  onFinishSplash: () => void;
+  onFinishSplash: (result: SplashResult) => void;
 }
 
 const GLYPHS_CO = ['C', 'o'];
 const GLYPHS_CREATE = ['C', 'r', 'e', 'a', 't', 'e'];
 
 export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinishSplash }) => {
-  // Step 1: Circle to Line Morph shared values
+  // Shared Animation Values
   const dotScale = useSharedValue(0);
-  const dotRotation = useSharedValue(0); // 0 -> 180 deg
+  const dotRotation = useSharedValue(0);
   const lineMorphScaleX = useSharedValue(0.05);
   const lineMorphScaleY = useSharedValue(1);
   const dotColorProgress = useSharedValue(0);
-
-  // Step 2: Staggered Glyphs animation trigger
   const glyphProgress = useSharedValue(0);
-
-  // Step 3: Chromatic Accent & Footer values
   const lineColorProgress = useSharedValue(0);
   const footerOpacity = useSharedValue(0);
   const footerTranslateY = useSharedValue(8);
-
-  // Step 4: Shared Exit Transition values
   const mainSplashOpacity = useSharedValue(1);
+
+  // Parallel session & profile check result
+  const authResultRef = useRef<SplashResult>({ hasSession: false, hasProfile: false });
 
   useEffect(() => {
     let timeoutId: NodeJS.Timeout;
 
-    // STEP 1: Klein Blue Circle Elastic Expansion, 180° Spin, and Morph to 1px Black Line
+    // Parallel Supabase Auth & Profile Verification
+    const checkAuthInParallel = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          authResultRef.current.hasSession = true;
+          const profile = await fetchProfileFromSupabase(session.user.id);
+          if (profile && profile.username) {
+            authResultRef.current.hasProfile = true;
+          } else {
+            const cached = await getCachedUserProfile();
+            if (cached && cached.username) {
+              authResultRef.current.hasProfile = true;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[SplashScreen] Parallel auth check error, defaulting to login flow');
+      }
+    };
+
+    checkAuthInParallel();
+
+    // STEP 1: Klein Blue Circle Elastic Expansion, 180° Spin, Morph to 1px Black Line
     dotScale.value = withSequence(
       withSpring(1.3, { damping: 10, stiffness: 180 }),
       withSpring(1.0, { damping: 14, stiffness: 140 })
@@ -87,14 +114,14 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinishSplash }) =>
       withSpring(0, { damping: 14, stiffness: 120 })
     );
 
-    // STEP 4: Shared Continuity Transition after 2.5s hold
+    // STEP 4: Shared Exit Transition after 2.5s hold
     timeoutId = setTimeout(() => {
       mainSplashOpacity.value = withTiming(
         0,
         { duration: 450, easing: Easing.inOut(Easing.quad) },
         (finished) => {
           if (finished) {
-            runOnJS(onFinishSplash)();
+            runOnJS(onFinishSplash)(authResultRef.current);
           }
         }
       );
@@ -193,7 +220,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinishSplash }) =>
           </View>
         </View>
 
-        {/* Footer Element: Uppercase & Larger Font Size */}
+        {/* Footer Element */}
         <Animated.View style={[styles.footerContainer, animatedFooterStyle]}>
           <Text style={styles.footerText}>CREADO POR B-AP TEAM</Text>
         </Animated.View>
@@ -245,6 +272,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: COLORS.background,
+    overflow: 'hidden', // Layout containment
   },
   centerSection: {
     alignItems: 'center',
@@ -297,9 +325,9 @@ const styles = StyleSheet.create({
   },
   footerText: {
     color: '#000000',
-    fontSize: 14, // Larger font size
-    letterSpacing: 1.8, // Elegant uppercase tracking
-    fontWeight: '700', // Bold uppercase
+    fontSize: 14,
+    letterSpacing: 1.8,
+    fontWeight: '700',
     textTransform: 'uppercase',
   },
 });
