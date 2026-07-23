@@ -58,11 +58,6 @@ export const LoginForm: React.FC<LoginFormProps> = ({
   return (
     <SkeuomorphicPanel style={styles.panelContainer}>
       <View style={styles.flexContainer}>
-        {/* Section Header */}
-        <Text style={[TYPOGRAPHY.label, styles.sectionHeader]}>
-          {mode === 'login' ? 'ACCESO PRIVADO' : 'CREAR CUENTA'}
-        </Text>
-
         <ErrorBanner message={validationError || error} onDismiss={onClearError} />
 
         {/* Inputs Group */}
@@ -136,13 +131,6 @@ const styles = StyleSheet.create({
     display: 'flex',
     flexDirection: 'column',
     gap: 18,
-  },
-  sectionHeader: {
-    color: COLORS.textPrimary,
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 1.5,
-    marginBottom: 4,
   },
   inputGroup: {
     display: 'flex',
