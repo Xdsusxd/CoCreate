@@ -2,12 +2,13 @@ import React, { useState, useCallback } from 'react';
 import { StyleSheet, View, Text, Pressable } from 'react-native';
 import { SkeuomorphicInput } from '../common/SkeuomorphicInput';
 import { SkeuomorphicButton } from '../common/SkeuomorphicButton';
-import { SkeuomorphicPanel } from '../common/SkeuomorphicPanel';
+import { LiquidGlassPanel } from '../common/LiquidGlassPanel';
 import { GoogleOfficialIcon } from '../common/GoogleOfficialIcon';
 import { ErrorBanner } from './ErrorBanner';
 import { COLORS } from '../../theme/colors';
 import { TYPOGRAPHY } from '../../theme/typography';
 import { AuthMode, AuthCredentials } from '../../types/auth';
+import { checkUsernameAvailable } from '../../services/profileService';
 
 interface LoginFormProps {
   onEmailSubmit: (credentials: AuthCredentials, mode: AuthMode) => Promise<boolean>;
@@ -27,6 +28,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({
   const [mode, setMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [username, setUsername] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
 
   const toggleMode = useCallback(() => {
@@ -52,11 +54,30 @@ export const LoginForm: React.FC<LoginFormProps> = ({
       return;
     }
 
-    await onEmailSubmit({ email: email.trim(), password }, mode);
-  }, [email, password, mode, onEmailSubmit, onClearError]);
+    if (mode === 'signup') {
+      const cleanUsername = username.trim().toLowerCase();
+      if (!cleanUsername) {
+        setValidationError('El nombre de usuario es requerido.');
+        return;
+      }
+      if (cleanUsername.length < 3) {
+        setValidationError('El nombre de usuario debe tener al menos 3 caracteres.');
+        return;
+      }
+
+      // Pre-validation check for duplicate username
+      const available = await checkUsernameAvailable(cleanUsername);
+      if (!available) {
+        setValidationError('El nombre de usuario ya está registrado por otra cuenta.');
+        return;
+      }
+    }
+
+    await onEmailSubmit({ email: email.trim(), password, username: username.trim() }, mode);
+  }, [email, password, username, mode, onEmailSubmit, onClearError]);
 
   return (
-    <SkeuomorphicPanel style={styles.panelContainer}>
+    <LiquidGlassPanel style={styles.panelContainer}>
       <View style={styles.flexContainer}>
         <ErrorBanner message={validationError || error} onDismiss={onClearError} />
 
@@ -80,6 +101,17 @@ export const LoginForm: React.FC<LoginFormProps> = ({
             secureTextEntry
             disabled={isLoading}
           />
+
+          {mode === 'signup' && (
+            <SkeuomorphicInput
+              label="NOMBRE DE USUARIO (USERNAME)"
+              value={username}
+              onChangeText={setUsername}
+              placeholder="tu_username"
+              autoCapitalize="none"
+              disabled={isLoading}
+            />
+          )}
         </View>
 
         {/* Primary Action Button */}
@@ -118,7 +150,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({
           </Pressable>
         </View>
       </View>
-    </SkeuomorphicPanel>
+    </LiquidGlassPanel>
   );
 };
 
@@ -145,7 +177,7 @@ const styles = StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: '#000000',
+    backgroundColor: COLORS.borderLine,
   },
   dividerText: {
     color: COLORS.textSecondary,

@@ -1,12 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import * as WebBrowser from 'expo-web-browser';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase, getOAuthRedirectUrl } from '../lib/supabase';
+import { fetchProfileFromSupabase, saveUserProfile, UserProfile, checkUsernameAvailable } from '../services/profileService';
 import { AuthCredentials } from '../types/auth';
-import { fetchProfileFromSupabase, getCachedUserProfile, UserProfile } from '../services/profileService';
-
-const LOCAL_MOCK_SESSION_KEY = '@cocreate_local_auth_session';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -15,93 +12,85 @@ export interface AuthStateExtended {
   session: Session | null;
   profile: UserProfile | null;
   isLoading: boolean;
-  isProfileChecking: boolean;
   error: string | null;
 }
 
+/**
+ * Secure authentication hook.
+ * - NO mock sessions. NO local fallback. NO access without valid Supabase JWT.
+ * - Every auth method returns { success, profileExists, username } for navigation logic.
+ * - Profile is fetched from Supabase DB after successful auth.
+ */
 export const useAuth = () => {
   const [authState, setAuthState] = useState<AuthStateExtended>({
     user: null,
     session: null,
     profile: null,
     isLoading: true,
-    isProfileChecking: false,
     error: null,
   });
 
-  // Check profile in Supabase DB / local cache for active user
-  const checkUserProfile = useCallback(async (userId: string): Promise<UserProfile | null> => {
-    setAuthState((prev) => ({ ...prev, isProfileChecking: true }));
-
-    // 1. Try Supabase DB
-    const dbProfile = await fetchProfileFromSupabase(userId);
-    if (dbProfile) {
-      setAuthState((prev) => ({ ...prev, profile: dbProfile, isProfileChecking: false }));
-      return dbProfile;
+  // Fetch profile from Supabase DB for authenticated user
+  const loadProfile = useCallback(async (userId: string): Promise<UserProfile | null> => {
+    try {
+      return await fetchProfileFromSupabase(userId);
+    } catch (err) {
+      console.warn('[useAuth] Error loading profile:', err);
+      return null;
     }
-
-    // 2. Try cached AsyncStorage
-    const cachedProfile = await getCachedUserProfile();
-    if (cachedProfile && (cachedProfile.id === userId || !cachedProfile.id)) {
-      setAuthState((prev) => ({ ...prev, profile: cachedProfile, isProfileChecking: false }));
-      return cachedProfile;
-    }
-
-    setAuthState((prev) => ({ ...prev, profile: null, isProfileChecking: false }));
-    return null;
   }, []);
 
-  // Listen to Supabase Auth state changes & restore session + profile
+  // Initialize: restore persisted Supabase session
   useEffect(() => {
     const initAuth = async () => {
       try {
         const { data: { session }, error } = await supabase.auth.getSession();
-        if (!error && session) {
-          const profile = await checkUserProfile(session.user.id);
-          setAuthState({
-            user: session.user,
-            session: session,
-            profile,
-            isLoading: false,
-            isProfileChecking: false,
-            error: null,
-          });
+
+        if (error || !session) {
+          setAuthState((prev) => ({ ...prev, isLoading: false }));
           return;
         }
 
-        // Check local mock session for offline / dev fallback
-        const localMock = await AsyncStorage.getItem(LOCAL_MOCK_SESSION_KEY);
-        if (localMock) {
-          const parsed = JSON.parse(localMock);
-          const cachedProfile = await getCachedUserProfile();
-          setAuthState({
-            user: parsed.user,
-            session: parsed.session,
-            profile: cachedProfile,
-            isLoading: false,
-            isProfileChecking: false,
-            error: null,
-          });
-          return;
+        const profile = await loadProfile(session.user.id);
+        if (profile?.username) {
+          console.log(`¡Bienvenido de vuelta, ${profile.username}!`);
         }
+
+        setAuthState({
+          user: session.user,
+          session,
+          profile,
+          isLoading: false,
+          error: null,
+        });
       } catch (err) {
-        console.warn('[useAuth] Error initializing auth, using default state');
+        console.warn('[useAuth] Init error:', err);
+        setAuthState((prev) => ({ ...prev, isLoading: false }));
       }
-
-      setAuthState((prev) => ({ ...prev, isLoading: false }));
     };
 
     initAuth();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    // Listen to realtime auth state changes (token refresh, sign out, etc.)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (session) {
-        const profile = await fetchProfileFromSupabase(session.user.id);
+        const profile = await loadProfile(session.user.id);
+        if (profile?.username) {
+          console.log(`¡Bienvenido de vuelta, ${profile.username}!`);
+        }
         setAuthState({
           user: session.user,
-          session: session,
+          session,
           profile,
           isLoading: false,
-          isProfileChecking: false,
+          error: null,
+        });
+      } else {
+        setAuthState({
+          user: null,
+          session: null,
+          profile: null,
+          isLoading: false,
           error: null,
         });
       }
@@ -110,150 +99,183 @@ export const useAuth = () => {
     return () => {
       subscription.unsubscribe();
     };
-  }, [checkUserProfile]);
+  }, [loadProfile]);
 
   const clearError = useCallback(() => {
     setAuthState((prev) => ({ ...prev, error: null }));
   }, []);
 
-  // Helper to store local mock session when operating in offline/demo mode
-  const createMockSession = async (email: string): Promise<User> => {
-    const mockUser: User = {
-      id: 'usr_' + Math.random().toString(36).substring(2, 9),
-      app_metadata: {},
-      user_metadata: {},
-      aud: 'authenticated',
-      created_at: new Date().toISOString(),
-      email: email,
-    };
-    const mockSession: Session = {
-      access_token: 'mock_token_' + Date.now(),
-      refresh_token: 'mock_refresh_' + Date.now(),
-      expires_in: 3600,
-      token_type: 'bearer',
-      user: mockUser,
-    };
-
-    await AsyncStorage.setItem(LOCAL_MOCK_SESSION_KEY, JSON.stringify({ user: mockUser, session: mockSession }));
-    return mockUser;
-  };
-
-  // Email/Password Login (supabase.auth.signInWithPassword)
+  /**
+   * Email/Password Login.
+   * Calls supabase.auth.signInWithPassword exclusively.
+   */
   const signInWithEmail = useCallback(
-    async ({ email, password }: AuthCredentials): Promise<{ success: boolean; profileExists: boolean }> => {
-      if (!email || !password) {
+    async (
+      emailOrCredentials: string | AuthCredentials,
+      passwordArg?: string
+    ): Promise<{ success: boolean; profileExists: boolean; username?: string }> => {
+      const email = typeof emailOrCredentials === 'string' ? emailOrCredentials : emailOrCredentials.email;
+      const password = typeof emailOrCredentials === 'string' ? passwordArg || '' : emailOrCredentials.password;
+
+      if (!email?.trim() || !password) {
         setAuthState((prev) => ({ ...prev, error: 'Por favor, ingresa tu correo y contraseña.' }));
         return { success: false, profileExists: false };
       }
 
       setAuthState((prev) => ({ ...prev, isLoading: true, error: null }));
 
-      try {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
 
-        if (error) {
-          if (
-            error.message.includes('Invalid login credentials') ||
-            error.message.includes('FetchError') ||
-            error.message.includes('Failed to fetch')
-          ) {
-            const mockUser = await createMockSession(email);
-            const profile = await getCachedUserProfile();
-            setAuthState({
-              user: mockUser,
-              session: null,
-              profile,
-              isLoading: false,
-              isProfileChecking: false,
-              error: null,
-            });
-            return { success: true, profileExists: Boolean(profile?.username) };
-          }
-
-          setAuthState((prev) => ({ ...prev, error: error.message, isLoading: false }));
-          return { success: false, profileExists: false };
+      if (error) {
+        let msg = error.message;
+        if (msg.includes('Invalid login credentials')) {
+          msg = 'Credenciales incorrectas. Verifica tu email y contraseña.';
         }
-
-        const profile = await checkUserProfile(data.user.id);
-        setAuthState({
-          user: data.user,
-          session: data.session,
-          profile,
-          isLoading: false,
-          isProfileChecking: false,
-          error: null,
-        });
-
-        return { success: true, profileExists: Boolean(profile?.username) };
-      } catch (err: any) {
-        const mockUser = await createMockSession(email);
-        const profile = await getCachedUserProfile();
-        setAuthState({
-          user: mockUser,
-          session: null,
-          profile,
-          isLoading: false,
-          isProfileChecking: false,
-          error: null,
-        });
-        return { success: true, profileExists: Boolean(profile?.username) };
+        setAuthState((prev) => ({ ...prev, error: msg, isLoading: false }));
+        return { success: false, profileExists: false };
       }
+
+      const profile = await loadProfile(data.user.id);
+      if (profile?.username) {
+        console.log(`¡Bienvenido de vuelta, ${profile.username}!`);
+      }
+
+      setAuthState({
+        user: data.user,
+        session: data.session,
+        profile,
+        isLoading: false,
+        error: null,
+      });
+
+      return {
+        success: true,
+        profileExists: Boolean(profile?.username),
+        username: profile?.username,
+      };
     },
-    [checkUserProfile]
+    [loadProfile]
   );
 
-  // Email/Password Signup (supabase.auth.signUp)
+  /**
+   * Email/Password/Username Signup.
+   * Calls supabase.auth.signUp with username in raw_user_meta_data.
+   * Validates and saves profile directly in Supabase DB.
+   */
   const signUpWithEmail = useCallback(
-    async ({ email, password }: AuthCredentials): Promise<{ success: boolean; profileExists: boolean }> => {
-      if (!email || !password) {
-        setAuthState((prev) => ({ ...prev, error: 'Por favor completa todos los campos.' }));
+    async (
+      emailOrCredentials: string | AuthCredentials,
+      passwordArg?: string,
+      usernameArg?: string
+    ): Promise<{ success: boolean; profileExists: boolean; username?: string }> => {
+      const email = typeof emailOrCredentials === 'string' ? emailOrCredentials : emailOrCredentials.email;
+      const password = typeof emailOrCredentials === 'string' ? passwordArg || '' : emailOrCredentials.password;
+      const username = typeof emailOrCredentials === 'string' ? usernameArg || '' : emailOrCredentials.username || '';
+
+      if (!email?.trim() || !password || !username?.trim()) {
+        setAuthState((prev) => ({ ...prev, error: 'Por favor completa todos los campos (Email, Contraseña, Username).' }));
+        return { success: false, profileExists: false };
+      }
+
+      if (password.length < 6) {
+        setAuthState((prev) => ({
+          ...prev,
+          error: 'La contraseña debe tener al menos 6 caracteres.',
+        }));
+        return { success: false, profileExists: false };
+      }
+
+      const cleanUsername = username.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+      if (cleanUsername.length < 3) {
+        setAuthState((prev) => ({
+          ...prev,
+          error: 'El nombre de usuario debe tener al menos 3 caracteres (letras, números, _).',
+        }));
+        return { success: false, profileExists: false };
+      }
+
+      // Check username availability in Supabase DB before proceeding
+      const isAvailable = await checkUsernameAvailable(cleanUsername);
+      if (!isAvailable) {
+        setAuthState((prev) => ({
+          ...prev,
+          error: 'El nombre de usuario ya está registrado por otra cuenta.',
+          isLoading: false,
+        }));
         return { success: false, profileExists: false };
       }
 
       setAuthState((prev) => ({ ...prev, isLoading: true, error: null }));
 
-      try {
-        const { data, error } = await supabase.auth.signUp({ email, password });
-        if (error) {
-          const mockUser = await createMockSession(email);
-          setAuthState({
-            user: mockUser,
-            session: null,
-            profile: null,
-            isLoading: false,
-            isProfileChecking: false,
-            error: null,
-          });
-          return { success: true, profileExists: false };
-        }
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: {
+          data: { username: cleanUsername },
+        },
+      });
 
-        setAuthState({
-          user: data.user,
-          session: data.session,
-          profile: null,
-          isLoading: false,
-          isProfileChecking: false,
-          error: null,
-        });
-        return { success: true, profileExists: false };
-      } catch (err: any) {
-        const mockUser = await createMockSession(email);
-        setAuthState({
-          user: mockUser,
-          session: null,
-          profile: null,
-          isLoading: false,
-          isProfileChecking: false,
-          error: null,
-        });
-        return { success: true, profileExists: false };
+      if (error) {
+        let msg = error.message;
+        if (msg.includes('already registered')) {
+          msg = 'Este correo electrónico ya está registrado.';
+        }
+        setAuthState((prev) => ({ ...prev, error: msg, isLoading: false }));
+        return { success: false, profileExists: false };
       }
+
+      if (data?.user) {
+        // Explicitly write profile to Supabase DB profiles table to ensure atomicity
+        try {
+          await supabase.from('profiles').upsert({
+            id: data.user.id,
+            username: cleanUsername,
+            updated_at: new Date().toISOString(),
+          });
+        } catch (dbErr) {
+          console.warn('[useAuth] Profile explicit upsert fallback note:', dbErr);
+        }
+      }
+
+      if (!data.session || !data.user) {
+        // Supabase requires email confirmation — user signed up but no active session yet
+        setAuthState((prev) => ({
+          ...prev,
+          error: 'Registro exitoso. Revisa tu correo para confirmar tu cuenta.',
+          isLoading: false,
+        }));
+        return { success: false, profileExists: false };
+      }
+
+      const profile = await loadProfile(data.user.id);
+      if (profile?.username) {
+        console.log(`¡Bienvenido de vuelta, ${profile.username}!`);
+      }
+
+      setAuthState({
+        user: data.user,
+        session: data.session,
+        profile,
+        isLoading: false,
+        error: null,
+      });
+
+      return {
+        success: true,
+        profileExists: true,
+        username: cleanUsername,
+      };
     },
-    []
+    [loadProfile]
   );
 
-  // Google OAuth flow (supabase.auth.signInWithOAuth)
-  const signInWithGoogle = useCallback(async (): Promise<{ success: boolean; profileExists: boolean }> => {
+  /**
+   * Google OAuth flow via expo-web-browser.
+   */
+  const signInWithGoogle = useCallback(async (): Promise<{ success: boolean; profileExists: boolean; username?: string }> => {
     setAuthState((prev) => ({ ...prev, isLoading: true, error: null }));
 
     try {
@@ -284,64 +306,47 @@ export const useAuth = () => {
 
             if (sessionError) throw sessionError;
 
-            if (sessionData && sessionData.user) {
-              const profile = await checkUserProfile(sessionData.user.id);
+            if (sessionData?.user) {
+              const profile = await loadProfile(sessionData.user.id);
+              if (profile?.username) {
+                console.log(`¡Bienvenido de vuelta, ${profile.username}!`);
+              }
               setAuthState({
                 user: sessionData.user,
                 session: sessionData.session,
                 profile,
                 isLoading: false,
-                isProfileChecking: false,
                 error: null,
               });
-              return { success: true, profileExists: Boolean(profile?.username) };
+              return { success: true, profileExists: Boolean(profile?.username), username: profile?.username };
             }
           }
         }
       }
 
-      // Dev fallback for Google Auth
-      const mockUser = await createMockSession('creador.google@cocreate.app');
-      const cachedProfile = await getCachedUserProfile();
-      setAuthState({
-        user: mockUser,
-        session: null,
-        profile: cachedProfile,
-        isLoading: false,
-        isProfileChecking: false,
-        error: null,
-      });
-      return { success: true, profileExists: Boolean(cachedProfile?.username) };
+      setAuthState((prev) => ({ ...prev, isLoading: false }));
+      return { success: false, profileExists: false };
     } catch (err: any) {
-      const mockUser = await createMockSession('creador.google@cocreate.app');
-      const cachedProfile = await getCachedUserProfile();
-      setAuthState({
-        user: mockUser,
-        session: null,
-        profile: cachedProfile,
+      setAuthState((prev) => ({
+        ...prev,
+        error: err.message || 'Error durante el inicio de sesión con Google.',
         isLoading: false,
-        isProfileChecking: false,
-        error: null,
-      });
-      return { success: true, profileExists: Boolean(cachedProfile?.username) };
+      }));
+      return { success: false, profileExists: false };
     }
-  }, [checkUserProfile]);
+  }, [loadProfile]);
 
-  // Sign out
+  /**
+   * Sign out and clear Supabase session.
+   */
   const signOut = useCallback(async () => {
     setAuthState((prev) => ({ ...prev, isLoading: true }));
-    try {
-      await supabase.auth.signOut();
-      await AsyncStorage.removeItem(LOCAL_MOCK_SESSION_KEY);
-    } catch (err) {
-      console.warn('[useAuth] Error signing out from Supabase, cleared local storage');
-    }
+    await supabase.auth.signOut();
     setAuthState({
       user: null,
       session: null,
       profile: null,
       isLoading: false,
-      isProfileChecking: false,
       error: null,
     });
   }, []);
@@ -353,6 +358,5 @@ export const useAuth = () => {
     signInWithGoogle,
     signOut,
     clearError,
-    checkUserProfile,
   };
 };

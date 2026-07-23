@@ -13,7 +13,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { COLORS } from '../theme/colors';
 import { supabase } from '../lib/supabase';
-import { fetchProfileFromSupabase, getCachedUserProfile } from '../services/profileService';
+import { fetchProfileFromSupabase } from '../services/profileService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const LINE_MAX_WIDTH = Math.min(SCREEN_WIDTH * 0.84, 320);
@@ -21,6 +21,7 @@ const LINE_MAX_WIDTH = Math.min(SCREEN_WIDTH * 0.84, 320);
 export interface SplashResult {
   hasSession: boolean;
   hasProfile: boolean;
+  username?: string;
 }
 
 interface SplashScreenProps {
@@ -58,11 +59,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinishSplash }) =>
           const profile = await fetchProfileFromSupabase(session.user.id);
           if (profile && profile.username) {
             authResultRef.current.hasProfile = true;
-          } else {
-            const cached = await getCachedUserProfile();
-            if (cached && cached.username) {
-              authResultRef.current.hasProfile = true;
-            }
+            authResultRef.current.username = profile.username;
           }
         }
       } catch (err) {

@@ -1,51 +1,14 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 
 export interface UserProfile {
-  id?: string;
+  id: string;
   username: string;
-  avatarUrl: string | null;
-  profile_setup_completed: boolean;
   updatedAt: string;
 }
 
-export const ASYNC_STORAGE_PROFILE_KEY = '@cocreate_user_profile';
-
 /**
- * Queries Supabase DB to check if a username is already taken by another user.
- */
-export const checkUsernameAvailable = async (
-  username: string,
-  currentUserId?: string
-): Promise<boolean> => {
-  const cleanUsername = username.replace(/^@/, '').trim();
-  if (!cleanUsername) return false;
-
-  try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id, username')
-      .eq('username', cleanUsername);
-
-    if (error) {
-      console.warn('[ProfileService] Supabase check error, assuming available:', error.message);
-      return true;
-    }
-
-    if (data && data.length > 0) {
-      // Taken if record belongs to a different user
-      const takenByOther = data.some((row) => row.id !== currentUserId);
-      return !takenByOther;
-    }
-  } catch (err) {
-    console.error('[ProfileService] Error checking username availability:', err);
-  }
-
-  return true;
-};
-
-/**
- * Fetches user profile directly from Supabase DB by User ID.
+ * Fetches user profile from Supabase DB by User ID.
+ * Returns null if no profile row exists or username is missing.
  */
 export const fetchProfileFromSupabase = async (
   userId: string
@@ -53,92 +16,97 @@ export const fetchProfileFromSupabase = async (
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, username, avatar_url, updated_at')
+      .select('id, username, updated_at')
       .eq('id', userId)
       .single();
 
-    if (error || !data) {
+    if (error || !data || !data.username) {
       return null;
     }
 
-    if (data.username) {
-      const profile: UserProfile = {
-        id: data.id,
-        username: data.username,
-        avatarUrl: data.avatar_url,
-        profile_setup_completed: true,
-        updatedAt: data.updated_at || new Date().toISOString(),
-      };
-
-      // Cache locally
-      await AsyncStorage.setItem(ASYNC_STORAGE_PROFILE_KEY, JSON.stringify(profile));
-      return profile;
-    }
+    return {
+      id: data.id,
+      username: data.username,
+      updatedAt: data.updated_at || new Date().toISOString(),
+    };
   } catch (err) {
-    console.error('[ProfileService] Error fetching profile from Supabase DB:', err);
+    console.error('[ProfileService] Error fetching profile:', err);
+    return null;
   }
-
-  return null;
 };
 
 /**
- * Persists user profile to Supabase DB and local AsyncStorage atomically.
+ * Checks if a username is already taken by another user in Supabase DB.
+ * Returns true if the username is available, false if taken.
+ */
+export const checkUsernameAvailable = async (
+  username: string,
+  currentUserId?: string
+): Promise<boolean> => {
+  const cleanUsername = username.trim().toLowerCase();
+  if (cleanUsername.length < 3) return false;
+
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('username', cleanUsername);
+
+    if (error) {
+      console.warn('[ProfileService] Username check error:', error.message);
+      // Fail closed: treat as unavailable on error
+      return false;
+    }
+
+    if (!data || data.length === 0) return true;
+
+    // Available if the only match is the current user's own profile
+    return data.every((row) => row.id === currentUserId);
+  } catch (err) {
+    console.error('[ProfileService] Error checking username:', err);
+    return false;
+  }
+};
+
+/**
+ * Saves/updates user profile in Supabase DB via upsert.
+ * Throws on validation failure or DB error — callers must handle.
  */
 export const saveUserProfile = async (
-  userId: string | undefined,
-  username: string,
-  avatarUrl: string | null
+  userId: string,
+  username: string
 ): Promise<UserProfile> => {
-  const cleanUsername = username.replace(/^@/, '').trim();
+  const cleanUsername = username.trim().toLowerCase();
 
-  // 1. Check availability in Supabase DB
+  if (cleanUsername.length < 3) {
+    throw new Error('El nombre de usuario debe tener al menos 3 caracteres.');
+  }
+
+  // 1. Check availability
   const isAvailable = await checkUsernameAvailable(cleanUsername, userId);
   if (!isAvailable) {
     throw new Error('El nombre de usuario no está disponible.');
   }
 
-  const profileData: UserProfile = {
+  // 2. Upsert to Supabase DB
+  const now = new Date().toISOString();
+  const { error } = await supabase.from('profiles').upsert(
+    {
+      id: userId,
+      username: cleanUsername,
+      updated_at: now,
+    },
+    { onConflict: 'id' }
+  );
+
+  if (error) {
+    console.error('[ProfileService] Supabase upsert error:', error);
+    throw new Error('Error al guardar el perfil en la base de datos.');
+  }
+
+  return {
     id: userId,
     username: cleanUsername,
-    avatarUrl,
-    profile_setup_completed: true,
-    updatedAt: new Date().toISOString(),
+    updatedAt: now,
   };
-
-  // 2. Persist locally to AsyncStorage (Multiplatform: localStorage on Web, SQLite on native)
-  await AsyncStorage.setItem(ASYNC_STORAGE_PROFILE_KEY, JSON.stringify(profileData));
-
-  // 3. Upsert to Supabase DB table 'profiles'
-  if (userId) {
-    const { error } = await supabase.from('profiles').upsert(
-      {
-        id: userId,
-        username: profileData.username,
-        avatar_url: avatarUrl,
-        updated_at: profileData.updatedAt,
-      },
-      { onConflict: 'id' }
-    );
-
-    if (error) {
-      console.warn('[ProfileService] Supabase upsert error:', error.message);
-    }
-  }
-
-  return profileData;
-};
-
-/**
- * Reads cached profile from local AsyncStorage.
- */
-export const getCachedUserProfile = async (): Promise<UserProfile | null> => {
-  try {
-    const raw = await AsyncStorage.getItem(ASYNC_STORAGE_PROFILE_KEY);
-    if (raw) {
-      return JSON.parse(raw) as UserProfile;
-    }
-  } catch (err) {
-    console.error('[ProfileService] Error reading cached profile:', err);
-  }
-  return null;
 };

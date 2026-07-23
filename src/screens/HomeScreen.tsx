@@ -130,7 +130,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   emailHighlight: {
-    color: COLORS.textBronze,
+    color: COLORS.kleinBlue,
     fontWeight: 'bold',
   },
   mainCard: {

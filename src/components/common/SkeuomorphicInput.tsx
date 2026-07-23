@@ -3,9 +3,9 @@ import { StyleSheet, View, TextInput, Text } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
+  withSpring,
   withTiming,
   interpolateColor,
-  Easing,
 } from 'react-native-reanimated';
 import { COLORS } from '../../theme/colors';
 import { TYPOGRAPHY } from '../../theme/typography';
@@ -28,12 +28,12 @@ export const SkeuomorphicInput: React.FC<SkeuomorphicInputProps> = ({
 
   const handleFocus = () => {
     setIsFocused(true);
-    focusAnim.value = withTiming(1, { duration: 220, easing: Easing.out(Easing.quad) });
+    focusAnim.value = withSpring(1, { damping: 12, stiffness: 180 });
   };
 
   const handleBlur = () => {
     setIsFocused(false);
-    focusAnim.value = withTiming(0, { duration: 200, easing: Easing.out(Easing.quad) });
+    focusAnim.value = withSpring(0, { damping: 15, stiffness: 150 });
   };
 
   // Fine Line Underline transition: width expands 1px -> 2px, color #000000 -> #2C4EC2

@@ -97,6 +97,7 @@ export const SkeuomorphicButton: React.FC<SkeuomorphicButtonProps> = ({
           animatedButtonStyle,
         ]}
       >
+        <View style={styles.glossyHighlight} />
         <View style={styles.contentRow}>
           {isLoading ? (
             <SkeuomorphicSpinner
@@ -125,20 +126,31 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   buttonSurface: {
-    borderRadius: 6,
+    borderRadius: 4,
     paddingVertical: 14,
     paddingHorizontal: 20,
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 50,
+    overflow: 'hidden',
+    position: 'relative',
   },
   primaryBorder: {
-    borderWidth: 1,
-    borderColor: '#000000',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.4)',
   },
   secondaryBorder: {
-    borderWidth: 1,
-    borderColor: '#000000',
+    borderWidth: 1.5,
+    borderColor: 'rgba(0, 0, 0, 0.8)',
+  },
+  glossyHighlight: {
+    position: 'absolute',
+    top: 0,
+    left: -20,
+    right: -20,
+    height: 25,
+    backgroundColor: 'rgba(255, 255, 255, 0.35)',
+    transform: [{ rotate: '-12deg' }],
   },
   disabledSurface: {
     opacity: 0.5,
@@ -147,6 +159,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    zIndex: 2,
   },
   iconWrapper: {
     marginRight: 10,

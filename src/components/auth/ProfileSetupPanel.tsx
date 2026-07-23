@@ -134,8 +134,8 @@ export const ProfileSetupPanel: React.FC<ProfileSetupPanelProps> = ({ onComplete
         return;
       }
 
-      // 2. Persist profile atomically to AsyncStorage & Supabase DB
-      const savedProfile = await saveUserProfile(user?.id, cleanUsername, avatarUri);
+      // 2. Persist profile atomically to Supabase DB
+      const savedProfile = await saveUserProfile(user?.id || '', cleanUsername);
 
       setIsSubmitting(false);
       setIsComplete(true);

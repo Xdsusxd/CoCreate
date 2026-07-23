@@ -1,35 +1,18 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { StyleSheet, View, Text, SafeAreaView, ScrollView } from 'react-native';
-import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withSpring,
-  withTiming,
-  runOnJS,
-  Easing,
-} from 'react-native-reanimated';
 import { MotiView, MotiText } from 'moti';
 import { LoginForm } from '../components/auth/LoginForm';
-import { ProfileSetupPanel } from '../components/auth/ProfileSetupPanel';
 import { useAuth } from '../hooks/useAuth';
 import { COLORS } from '../theme/colors';
 import { TYPOGRAPHY } from '../theme/typography';
 import { AuthCredentials, AuthMode } from '../types/auth';
-import { UserProfile } from '../services/profileService';
 
 interface LoginScreenProps {
-  onLoginSuccess: () => void;
+  onLoginSuccess: (username?: string) => void;
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const { signInWithEmail, signUpWithEmail, signInWithGoogle, isLoading, error, clearError } = useAuth();
-  const [step, setStep] = useState<'credentials' | 'profile_setup'>('credentials');
-
-  // Motion Graphics Curtain Shared Values (1px Klein Blue line expanding outward)
-  const curtainScaleX = useSharedValue(0);
-  const curtainOpacity = useSharedValue(0);
-  const credentialsOpacity = useSharedValue(1);
-  const profileOpacity = useSharedValue(0);
 
   const handleAuthSubmit = async (credentials: AuthCredentials, mode: AuthMode) => {
     const result = mode === 'login'
@@ -37,12 +20,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       : await signUpWithEmail(credentials);
 
     if (result.success) {
-      if (result.profileExists) {
-        // Skip profile setup if profile already exists in DB/cache
-        onLoginSuccess();
-      } else {
-        triggerCurtainTransitionToProfile();
+      if (result.username) {
+        console.log(`¡Bienvenido de vuelta, ${result.username}!`);
       }
+      onLoginSuccess(result.username);
     }
     return result.success;
   };
@@ -50,58 +31,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const handleGoogleSubmit = async () => {
     const result = await signInWithGoogle();
     if (result.success) {
-      if (result.profileExists) {
-        onLoginSuccess();
-      } else {
-        triggerCurtainTransitionToProfile();
+      if (result.username) {
+        console.log(`¡Bienvenido de vuelta, ${result.username}!`);
       }
+      onLoginSuccess(result.username);
     }
     return result.success;
   };
-
-  // Step 1 -> Step 2 Curtain Transition:
-  // 1. Credentials form fades.
-  // 2. 1px Klein Blue line expands horizontally outward as a curtain reveal.
-  // 3. ProfileSetupPanel opens smoothly.
-  const triggerCurtainTransitionToProfile = () => {
-    credentialsOpacity.value = withTiming(0, { duration: 250 });
-    curtainOpacity.value = 1;
-    curtainScaleX.value = withTiming(
-      1,
-      { duration: 400, easing: Easing.out(Easing.cubic) },
-      (finished) => {
-        if (finished) {
-          runOnJS(setStep)('profile_setup');
-          curtainOpacity.value = withTiming(0, { duration: 250 });
-          profileOpacity.value = withTiming(1, { duration: 350 });
-        }
-      }
-    );
-  };
-
-  const handleProfileSetupComplete = (profile: UserProfile) => {
-    console.log('[LoginScreen] Profile setup completed:', profile);
-    onLoginSuccess();
-  };
-
-  const credentialsAnimatedStyle = useAnimatedStyle(() => {
-    return {
-      opacity: credentialsOpacity.value,
-    };
-  });
-
-  const profileAnimatedStyle = useAnimatedStyle(() => {
-    return {
-      opacity: profileOpacity.value,
-    };
-  });
-
-  const curtainAnimatedStyle = useAnimatedStyle(() => {
-    return {
-      opacity: curtainOpacity.value,
-      transform: [{ scaleX: curtainScaleX.value }],
-    };
-  });
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -118,6 +54,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           style={styles.headerSection}
         >
           <View style={styles.logoContainer}>
+            {/* Glossy Refraction Effect on Logo */}
+            <View style={styles.logoGlossyStripe} />
             <Text style={styles.logoCo}>Co</Text>
             <Text style={styles.logoCreate}>Create</Text>
           </View>
@@ -132,26 +70,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           </MotiText>
         </MotiView>
 
-        {/* Transition Container: Credentials Form <-> 1px Curtain Line <-> Profile Setup Panel */}
+        {/* Consolidated Login / Register Liquid Glass Form */}
         <View style={styles.cardContainerWrapper}>
-          {/* Horizontal 1px Klein Blue Curtain Line Reveal */}
-          <Animated.View style={[styles.curtainLine, curtainAnimatedStyle]} />
-
-          {step === 'credentials' ? (
-            <Animated.View style={[styles.cardAnimatedView, credentialsAnimatedStyle]}>
-              <LoginForm
-                onEmailSubmit={handleAuthSubmit}
-                onGoogleSubmit={handleGoogleSubmit}
-                isLoading={isLoading}
-                error={error}
-                onClearError={clearError}
-              />
-            </Animated.View>
-          ) : (
-            <Animated.View style={[styles.cardAnimatedView, profileAnimatedStyle]}>
-              <ProfileSetupPanel onCompleteSetup={handleProfileSetupComplete} />
-            </Animated.View>
-          )}
+          <LoginForm
+            onEmailSubmit={handleAuthSubmit}
+            onGoogleSubmit={handleGoogleSubmit}
+            isLoading={isLoading}
+            error={error}
+            onClearError={clearError}
+          />
         </View>
 
         {/* Professional Team Credits Footer */}
@@ -184,7 +111,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerSection: {
-    marginBottom: 36,
+    marginBottom: 32,
     alignItems: 'center',
     width: '100%',
   },
@@ -193,6 +120,18 @@ const styles = StyleSheet.create({
     alignItems: 'baseline',
     justifyContent: 'center',
     marginVertical: 4,
+    position: 'relative',
+  },
+  logoGlossyStripe: {
+    position: 'absolute',
+    top: 5,
+    left: -10,
+    right: -10,
+    height: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.4)',
+    transform: [{ rotate: '-8deg' }],
+    zIndex: 1,
+    pointerEvents: 'none',
   },
   logoCo: {
     fontSize: 54,
@@ -200,7 +139,7 @@ const styles = StyleSheet.create({
     letterSpacing: -2,
     fontWeight: '300',
     fontStyle: 'italic',
-    color: COLORS.kleinBlue, // #2C4EC2
+    color: COLORS.kleinBlue, // Klein Blue #2C4EC2
   },
   logoCreate: {
     fontSize: 54,
@@ -208,7 +147,7 @@ const styles = StyleSheet.create({
     letterSpacing: -2,
     fontWeight: '900',
     fontStyle: 'normal',
-    color: COLORS.kleinBlue, // #2C4EC2
+    color: COLORS.kleinBlue, // Klein Blue #2C4EC2
   },
   subtitleText: {
     color: COLORS.textSecondary, // Ash Grey #5A5A5C
@@ -222,20 +161,6 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 420,
     alignSelf: 'center',
-    position: 'relative',
-    overflow: 'hidden', // Layout containment
-  },
-  curtainLine: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: '50%',
-    height: 1, // 1px horizontal Klein Blue curtain
-    backgroundColor: COLORS.kleinBlue,
-    zIndex: 10,
-  },
-  cardAnimatedView: {
-    width: '100%',
   },
   footerInfo: {
     marginTop: 36,
