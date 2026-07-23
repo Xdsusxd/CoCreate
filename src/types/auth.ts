@@ -18,8 +18,9 @@ export interface AuthCredentials {
 export interface SkeuomorphicButtonProps {
   title: string;
   onPress: () => void;
-  variant?: 'bronze' | 'metal' | 'secondary' | 'danger';
+  variant?: 'bronze' | 'metal' | 'secondary' | 'danger' | 'primary';
   isLoading?: boolean;
+  loading?: boolean;
   icon?: React.ReactNode;
   disabled?: boolean;
   fullWidth?: boolean;
@@ -28,13 +29,16 @@ export interface SkeuomorphicButtonProps {
 }
 
 export interface SkeuomorphicInputProps {
-  label: string;
+  label?: string;
   value: string;
   onChangeText: (text: string) => void;
   placeholder?: string;
   secureTextEntry?: boolean;
-  keyboardType?: 'default' | 'email-address' | 'numeric' | 'phone-pad';
+  keyboardType?: 'default' | 'email-address' | 'numeric' | 'phone-pad' | 'url';
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+  multiline?: boolean;
+  numberOfLines?: number;
+  style?: object;
   error?: string | null;
   disabled?: boolean;
   testID?: string;
