@@ -6,13 +6,16 @@ import Animated, {
   withSpring,
   withTiming,
   runOnJS,
+  Easing,
 } from 'react-native-reanimated';
 import { MotiView, MotiText } from 'moti';
 import { LoginForm } from '../components/auth/LoginForm';
+import { ProfileSetupPanel } from '../components/auth/ProfileSetupPanel';
 import { useAuth } from '../hooks/useAuth';
 import { COLORS } from '../theme/colors';
 import { TYPOGRAPHY } from '../theme/typography';
 import { AuthCredentials, AuthMode } from '../types/auth';
+import { UserProfile } from '../services/profileService';
 
 interface LoginScreenProps {
   onLoginSuccess: () => void;
@@ -20,12 +23,13 @@ interface LoginScreenProps {
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const { signInWithEmail, signUpWithEmail, signInWithGoogle, isLoading, error, clearError } = useAuth();
-  const [isSuccessDissolving, setIsSuccessDissolving] = useState(false);
+  const [step, setStep] = useState<'credentials' | 'profile_setup'>('credentials');
 
-  // Success dissolution animation shared values
-  const cardScale = useSharedValue(1);
-  const cardOpacity = useSharedValue(1);
-  const cardTranslateY = useSharedValue(0);
+  // Motion Graphics Shared Values for Lateral Collapse / Elastic Expand Transition
+  const credentialsScaleX = useSharedValue(1);
+  const credentialsOpacity = useSharedValue(1);
+  const profileScaleX = useSharedValue(0);
+  const profileOpacity = useSharedValue(0);
 
   const handleAuthSubmit = async (credentials: AuthCredentials, mode: AuthMode) => {
     const success = mode === 'login'
@@ -33,7 +37,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       : await signUpWithEmail(credentials);
 
     if (success) {
-      triggerSuccessDissolve();
+      triggerTransitionToProfile();
     }
     return success;
   };
@@ -41,26 +45,45 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const handleGoogleSubmit = async () => {
     const success = await signInWithGoogle();
     if (success) {
-      triggerSuccessDissolve();
+      triggerTransitionToProfile();
     }
     return success;
   };
 
-  const triggerSuccessDissolve = () => {
-    setIsSuccessDissolving(true);
-    cardScale.value = withSpring(0.98, { damping: 25, stiffness: 200 });
-    cardTranslateY.value = withTiming(-6, { duration: 300 });
-    cardOpacity.value = withTiming(0, { duration: 350 }, (finished) => {
-      if (finished) {
-        runOnJS(onLoginSuccess)();
+  // Step 1 -> Step 2 Motion Graphics Transition:
+  // 1. Credentials form fades & collapses horizontally toward center (scaleX: 1 -> 0).
+  // 2. Profile Setup Panel opens elastically (scaleX: 0 -> 1 with Spring interpolation).
+  const triggerTransitionToProfile = () => {
+    credentialsOpacity.value = withTiming(0, { duration: 250 });
+    credentialsScaleX.value = withTiming(
+      0,
+      { duration: 320, easing: Easing.inOut(Easing.cubic) },
+      (finished) => {
+        if (finished) {
+          runOnJS(setStep)('profile_setup');
+          profileScaleX.value = withSpring(1, { damping: 16, stiffness: 130 });
+          profileOpacity.value = withTiming(1, { duration: 350 });
+        }
       }
-    });
+    );
   };
 
-  const cardDissolveStyle = useAnimatedStyle(() => {
+  const handleProfileSetupComplete = (profile: UserProfile) => {
+    console.log('[LoginScreen] Profile setup completed successfully:', profile);
+    // Flow halted here as requested by prompt guidelines (profile_setup_completed: true saved in AsyncStorage & Supabase)
+  };
+
+  const credentialsAnimatedStyle = useAnimatedStyle(() => {
     return {
-      opacity: cardOpacity.value,
-      transform: [{ scale: cardScale.value }, { translateY: cardTranslateY.value }],
+      opacity: credentialsOpacity.value,
+      transform: [{ scaleX: credentialsScaleX.value }],
+    };
+  });
+
+  const profileAnimatedStyle = useAnimatedStyle(() => {
+    return {
+      opacity: profileOpacity.value,
+      transform: [{ scaleX: profileScaleX.value }],
     };
   });
 
@@ -71,20 +94,18 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* Header Branding Section - Seamless Shared Logo Header */}
+        {/* Header Branding Section */}
         <MotiView
           from={{ opacity: 0, translateY: 6 }}
           animate={{ opacity: 1, translateY: 0 }}
           transition={{ type: 'timing', duration: 400, delay: 50 }}
           style={styles.headerSection}
         >
-          {/* Monumental Logo: "Co" (italic 300) + "Create" (normal 900) in Klein Blue #2C4EC2 */}
           <View style={styles.logoContainer}>
             <Text style={styles.logoCo}>Co</Text>
             <Text style={styles.logoCreate}>Create</Text>
           </View>
 
-          {/* Subtitle in Ash Grey */}
           <MotiText
             from={{ opacity: 0, translateY: 4 }}
             animate={{ opacity: 1, translateY: 0 }}
@@ -95,23 +116,24 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           </MotiText>
         </MotiView>
 
-        {/* Micro-displacement Entrance (6px slide-up with fade-in) */}
-        <MotiView
-          from={{ opacity: 0, translateY: 6 }}
-          animate={{ opacity: 1, translateY: 0 }}
-          transition={{ type: 'timing', duration: 400, delay: 250 }}
-          style={styles.cardContainerWrapper}
-        >
-          <Animated.View style={[styles.cardAnimatedView, cardDissolveStyle]}>
-            <LoginForm
-              onEmailSubmit={handleAuthSubmit}
-              onGoogleSubmit={handleGoogleSubmit}
-              isLoading={isLoading}
-              error={error}
-              onClearError={clearError}
-            />
-          </Animated.View>
-        </MotiView>
+        {/* Transition Container: Credentials Form <-> Profile Setup Panel */}
+        <View style={styles.cardContainerWrapper}>
+          {step === 'credentials' ? (
+            <Animated.View style={[styles.cardAnimatedView, credentialsAnimatedStyle]}>
+              <LoginForm
+                onEmailSubmit={handleAuthSubmit}
+                onGoogleSubmit={handleGoogleSubmit}
+                isLoading={isLoading}
+                error={error}
+                onClearError={clearError}
+              />
+            </Animated.View>
+          ) : (
+            <Animated.View style={[styles.cardAnimatedView, profileAnimatedStyle]}>
+              <ProfileSetupPanel onCompleteSetup={handleProfileSetupComplete} />
+            </Animated.View>
+          )}
+        </View>
 
         {/* Professional Team Credits Footer */}
         <MotiView
@@ -190,7 +212,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   footerInfoText: {
-    color: COLORS.textSecondary, // Ash Grey #5A5A5C
+    color: COLORS.textSecondary,
     fontSize: 9,
     letterSpacing: 1.5,
     fontWeight: '700',
